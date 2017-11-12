@@ -1,5 +1,3 @@
-
-
 // handles loading the users and passwords from the users_file
 
 #include <sys/types.h>

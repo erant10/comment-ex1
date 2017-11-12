@@ -1,207 +1,171 @@
-#include<stdio.h>
-#include<string.h>    //strlen
-#include<sys/socket.h>
-#include<arpa/inet.h> //inet_addr
-#include<unistd.h>    //write
-
-#include <fcntl.h> // for open
-#include <unistd.h> // for close
-
-int sendall(int s, char *buf, int *len) {
-
-    int total = 0; /* how many bytes we've sent */
-    int bytesleft = *len; /* how many we have left to send */
-    int n;
-
-    while(total < *len) {
-        n = send(s, buf+total, bytesleft, 0);
-        if (n == -1) { break; }
-        total += n;
-        bytesleft -= n;
-    }
-    *len = total; /* return number actually sent here */
-    return n == -1 ? -1:0; /*-1 on failure, 0 on success */
-}
+#include <stdio.h>
+#include <string.h>    //strlen
+#include <sys/socket.h>
+#include <arpa/inet.h> //inet_addr
+#include <unistd.h>    //write
+#include <errno.h>
+#include <string.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include "network_main.h"
+#define DEFAULT_PORT 1337
+#define MAX_USERS 15
+#define NUM_OF_CLIENTS 15
+#define MAX_FILE 512
+#define GREETING_MSG "Welcome! Please log in."
 
 
 int main(int argc , char *argv[])
 {
-    int socket_desc , client_sock , c , read_size, PORT;
-    struct sockaddr_in server , client;
-    char client_message[2000];
 
-    // init server
-    // call the load_users executable
+    // handle command line arguments
+    int port;
+    char* users_file;
 
-
-    //Create socket
-    socket_desc = socket(AF_INET , SOCK_STREAM , 0);
-    if (socket_desc == -1) {
-        printf("Could not create socket");
-    }
-    puts("Socket created");
-
-    //Check if PORT was provided
-    if (argc == 4) {
-        PORT = (int) strtol((argv[3]), NULL, 10);
-        if (PORT == 0) {
-            printf("Error parsing port.\n");
-        }
+    if (argc < 2) {								// too few arguments
+        printf("Missing users file's path.\n");
+        return 1;
+    } else if (argc == 3) {						// port was provided
+        port = atoi(argv[2]);
+    } else if (argc == 2) {						// port was not provided
+        port = DEFAULT_PORT;
     } else {
-        // Set PORT to default 1337
-        PORT = 1337;
+        return 1;
     }
+    users_file = argv[1];
 
-    //Prepare the sockaddr_in structure
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons( PORT );
+    // initialization
+    int lsd, csd;                                       // listening socket & client socket
+    int numOfUsers, fdmax;
+    struct sockaddr_in myaddr, client_addr;
+    unsigned int sin_size = sizeof(struct sockaddr_in);
+    char* greeting = GREETING_MSG;						// greeting message to show client
 
-    //Bind
-    if( bind(socket_desc,(struct sockaddr *)&server , sizeof(server)) < 0)
-    {
-        //print the error message
-        perror("bind failed. Error");
+    fd_set master, readfds;
+    FD_ZERO(&master);
+    FD_ZERO(&readfds);
+    User* users = getUsers(users_file, &numOfUsers);	// creates users and their directories based on the supplied users file
+    if (users == NULL) {
+        return 1;
+    }
+    int* fdsToUsersMap = (int*) calloc(NUM_OF_CLIENTS, sizeof(int)); // fdsToUsersMap[i] is the fd associated with Users[i]
+
+
+    //create listening socket
+    lsd = socket(PF_INET, SOCK_STREAM, 0);
+    if (lsd == -1) {
+        printf("%s\n", strerror(errno));
+        destroyUsers(users, numOfUsers);
+        return 1;
+    }
+    FD_SET(lsd, &master);
+    fdmax = lsd;
+
+    myaddr.sin_family = AF_INET;
+    myaddr.sin_port = htons(port);
+    myaddr.sin_addr.s_addr = INADDR_ANY;
+    // Bind the socket
+    if (bind(lsd, (struct sockaddr *) &myaddr, sizeof(myaddr)) == -1) {
+        printf("%s\n", strerror(errno));
+        if (close(lsd) == -1) {
+            printf("%s\n", strerror(errno));
+        }
+        destroyUsers(users, numOfUsers);
         return 1;
     }
 
-    //Listen for clients
-    listen(socket_desc , 15);
-    //Accept and incoming connection
-    puts("Waiting for incoming connections...");
-    c = sizeof(struct sockaddr_in);
+    // start listening for clients
+    if (listen(lsd, MAX_USERS) == -1) {
+        printf("%s\n", strerror(errno));
+        if (close(lsd) == -1) {
+            printf("%s\n", strerror(errno));
+        }
+        destroyUsers(users, numOfUsers);
+        return 1;
+    }
 
-    // keep accepting connections
+
+    // keep accepting connections one at a time
     while(1){
+        readfds = master;      // copy master set
 
-        //accept connection from an incoming client
-        client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
-        if (client_sock < 0) {
-            perror("accept failed");
+        if (select(fdmax + 1, &readfds, NULL, NULL, NULL) == -1) {
+            printf("%s\n", strerror(errno));
+            closeAndFree(fdmax, master, users, numOfUsers, fdsToUsersMap);
             return 1;
         }
-        //Connection established
-        puts("Connection accepted");
 
-        char *client_login_info;
-        char *username, *password;
-        //Keep receiving login info from client until the login is successful
-        while( !successful_login ) {
-            if ((read_size = recv(client_sock, client_login_info, 2000, 0)) > 0) {
-                // parse the client_login_info according to the protocol
-                username = "";
-                password = "";
-
-                // check if the user exists
-                DIR *dir = opendir(username);
-                if (dir) {
-                    // Directory exists - check if password matches
-                    if (password_match) {
-                        successful_login = 1;
+        int i;
+        for (i = 0; i <= fdmax; i++) {
+            if (FD_ISSET(i, &readfds)) {
+                if (i == lsd) {
+                    // handle new connection
+                    csd = accept(lsd, (struct sockaddr*) &client_addr, &sin_size);  // create connection socket
+                    if (csd == -1) {
+                        printf("%s\n", strerror(errno));
+                        continue;			                                        // move on to next read-ready socket
                     }
-                    // closedir when done
-                    closedir(dir);
-                } else if (ENOENT != errno) {
-                    // opendir() failed for some other reason.
-                    perror("opendir failed");
-                    return 1;
-                }
-                if(!successful_login) {
-                    //Send failed login message
-                    char *error_message = "Invalid username or password";
-                    if( send(client_sock , error_message , strlen(error_message) , 0) < 0)
-                    {
-                        puts("Failed sending message");
-                        return 1;
-                    }
-                }
-            }
-            if (read_size == 0) {
-                puts("Client disconnected");
-                fflush(stdout);
-            } else if (read_size < 0) {
-                perror("recv failed");
-            }
-        }
-        // login successful.
-        // count how many files the user has
-        int file_count;
 
-        // send welcome message
-        char *welcome_message;
-        sprintf(welcome_message, "Welcome %s, You have %d files.", file_count);;
-        if( send(client_sock , welcome_message , strlen(welcome_message) , 0) < 0) {
-            puts("Failed sending message");
-            return 1;
-        }
-        // start listening for commands
-        char *client_request;
-        while ((read_size = recv(client_sock, client_request, 2000, 0)) > 0) {
-            // read action type from client_request
-            int action;
-
-            switch(action) {
-                case 0 :
-                    // list_of_files
-                    DIR *dir;
-                    struct dirent *ent;
-                    if ((dir = opendir (username)) != NULL) {
-                        char *files_buffer;
-                        char *filename;
-                        // read all the files into a files_buffer
-                        while ((ent = readdir (dir)) != NULL) {
-                            sprintf(filename, "%s\n", ent->d_name);
-                            sprintf(files_buffer + strlen(files_buffer),filename);
-                        }
-                        // finally close dir
-                        closedir (dir);
-
-                        // Send the file list
-                        if( send(client_sock , files_buffer , strlen(files_buffer) , 0) < 0) {
-                            puts("Failed sending message");
+                    // greet client
+                    if (sendMessage(csd, greeting) != 0) {
+                        if (close(csd) == -1) {
+                            printf("%s\n", strerror(errno));
+                            closeAndFree(fdmax, master, users, numOfUsers, fdsToUsersMap);
                             return 1;
                         }
-                    } else {
-                        /* could not open directory */
-                        perror ("");
-                        return EXIT_FAILURE;
+                        continue;			                                        // move on to next read-ready socket
                     }
-                    break;
-                case 1 :
-                    // delete_file
-                    char *filename, *message;
-                    if( access( filename, F_OK ) != -1 ) {
-                        // file exists - remove it
-                        if(remove(filename) == 0) {
-                            message = "File removed.";
-                        } else {
-                            printf("Error: unable to delete the file");
+
+                    // authenticate client
+                    User user = NULL;
+                    int userIndex = 0;
+                    if (auth(csd, users, &user, &userIndex) == 1 || user == NULL) {	            // failed log in
+                        printf("error in authentication\n");
+                        sendMessage(csd, "Invalid username or password\n");
+                        if (close(csd) == -1) {
+                            printf("%s\n", strerror(errno));
+                            closeAndFree(fdmax, master, users, numOfUsers, fdsToUsersMap);
+                            return 1;
                         }
-                    } else {
-                        // file doesn't exist
-                        message = "No such file exists!";
+                        continue;			                                        // move on to next read-ready socket
                     }
-                    if( send(client_sock , message , strlen(message) , 0) < 0) {
-                        puts("Failed sending message");
-                        return 1;
+                    User user = findUserByFd(users, fdsToUsersMap, i, &userIndex);
+                    char *username = getUsername(user);
+                    int numOfFiles = getNumOfFiles(user);
+                    char *initial_msg;
+                    // Send the user a welcome message
+                    sprintf(initial_msg, sizeof initial_msg, "Hi %s, you have %d files stored.\n", username, numOfFiles);
+                    if (sendMessage(csd, initial_msg) != 0) {	            // successful log in
+                        if (close(csd) == -1) {
+                            printf("%s\n", strerror(errno));
+                            closeAndFree(fdmax, master, users, numOfUsers, fdsToUsersMap);
+                            return 1;
+                        }
+                        continue;			                                        // move on to next read-ready socket
                     }
-                    break;
-                case 2 :
-                    // add_file
-                    break;
-                case 3 :
-                    // get_file
-                    break;
-                default :
-                    // quit
-                    printf("quit");
+
+                    FD_SET(csd, &master); // add to master set
+                    if (csd > fdmax) {    // keep track of the max
+                        fdmax = csd;
+                    }
+                    fdsToUsersMap[userIndex] = csd;
+
+                } else {
+                    // handle client's request
+                    int userIndex = 0;
+                    User user = findUserByFd(users, fdsToUsersMap, i, &userIndex);
+                    // handle the client's requests until quit or error
+                    while(handle(i, user, users, fdsToUsersMap, lsd) != 0) { // error or quit
+                        if (quit(i, &master, &fdmax, fdsToUsersMap, userIndex) != 0) {
+                            printf("%s\n", strerror(errno));
+                            closeAndFree(fdmax, master, users, numOfUsers, fdsToUsersMap);
+                            return 1;
+                        }
+                    }
+                }
             }
-        }
-        if (read_size == 0) {
-            puts("Client disconnected");
-            fflush(stdout);
-        } else if (read_size < 0) {
-            perror("recv failed");
         }
 
     }

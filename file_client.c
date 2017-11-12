@@ -1,7 +1,7 @@
-#include<stdio.h> //printf
-#include<string.h>    //strlen
-#include<sys/socket.h>    //socket
-#include<arpa/inet.h> //inet_addr
+#include <stdio.h> //printf
+#include <string.h>    //strlen
+#include <sys/socket.h>    //socket
+#include <arpa/inet.h> //inet_addr
 
 #include <fcntl.h> // for open
 #include <unistd.h> // for close
@@ -16,7 +16,7 @@ int main(int argc , char *argv[])
 
     // Check arguments
     if ( argc > 3) {
-        printf("Error in number of arguments (1 or 2 expected)\n");
+        printf("Error in number of arguments \n");//ido: i deleted the parenthis
         exit(-1);
     }
 
@@ -32,7 +32,7 @@ int main(int argc , char *argv[])
         }
     } else {
         // if they were not provided - set to default values
-        HOST = "127.0.0.1";
+        HOST = "127.0.0.1";//ido: why this is the local host?
         PORT = 1337;
     }
 
@@ -119,7 +119,7 @@ int main(int argc , char *argv[])
         //Handle Actions Here
         if (action == 0) {
             // list_of_files - send action to server and print the response
-            if( send(sock , action , strlen(action) , 0) < 0) {
+            if( send(sock , action , strlen(action) , 0) < 0) {///ido: why strlen(action)? action is an int
                 puts("Send failed");
                 return 1;
             }
@@ -133,7 +133,7 @@ int main(int argc , char *argv[])
 
         } else if( action == 1 ) {
             // delete_file - send action and the file name to the server
-            char buffer = ""; // build the buffer according to the protocol
+            char buffer = ""; // build the buffer according to the protocol ///ido:what is this buffer? we need to send the filename
             if( send(sock , buffer , strlen(buffer) , 0) < 0) {
                 puts("Send failed");
                 return 1;
@@ -151,8 +151,8 @@ int main(int argc , char *argv[])
 
             // ASK YUVAL - what is the best approach to send the file
             // build the buffer with the file content according to the protocol
-                // open the file
-                // copy file content into buffer
+            // open the file
+            // copy file content into buffer
 
             // send the buffer to the server
             char buffer = ""; // build the data buffer according to the protocol
