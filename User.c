@@ -4,8 +4,8 @@
 #include "User.h"
 #include "Mail.h"
 #define MAXFILES 15
-#define MAX_USERNAME 50
-#define MAX_PASSWORD 50
+#define MAX_USERNAME 25
+#define MAX_PASSWORD 25
 
 struct user {
     char username[MAX_USERNAME];
@@ -40,3 +40,7 @@ char* getPassword(User user) {
 int getNumOfFiles(User user) {
     return user->numOfFiles;
 }
+
+void incrementNumOfFiles(User user, int i) {
+    user->numOfFiles += i;
+};

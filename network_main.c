@@ -6,18 +6,20 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <unistd.h>
-
 #define MAX_USERNAME 15
 #define MAX_PASSWORD 15
+#define PREFIX_LEN 20
 #define NUM_OF_CLIENTS 15
 #define MAX_FILESIZE 512
+#defint MAX_FILENAME 50
 #define LEN_FIELD_SIZE 2        // the number of bytes dedicated to the size of the message
+
 // define OP codes
 #define LIST_OF_FILES_OPCODE '1'
 #define DELETE_FILE_OPCODE '2'
 #define ADDFILE_OPCODE '3'
 #define GET_FILE_OPCODE '4'
-
+#define QUIT_OPCODE '5'
 
 int sendall(int socket, char *buf, int *len) {
     int total = 0;          // how many bytes we've sent
@@ -45,14 +47,14 @@ int sendMessage(int socket, char *buf) {
     memcpy(lenBuf, &lenS, LEN_FIELD_SIZE);				// move from short to a char array for sending
     if (sendall(socket, lenBuf, &lenBufSize) == -1) {	// send
         printf("%s\n", strerror(errno));
-        printf("Only %d bytes were sent due to the error\n", lenBufSize);
+        printf("Only %d bytes were sent\n", lenBufSize);
         return 1;
     }
 
     // send message itself
     if (sendall(socket, buf, &msgLen) == -1) {
         printf("%s\n", strerror(errno));
-        printf("Only %d bytes were sent due to the error\n", msgLen);
+        printf("Only %d bytes were sent\n", msgLen);
         return 1;
     }
     return 0;
@@ -81,7 +83,7 @@ int recvMessage(int socket, char **buf) {
     int lenBufSize = LEN_FIELD_SIZE;
     if (recvall(socket, lenBuf, &lenBufSize) == -1) {
         printf("%s\n", strerror(errno));
-        printf("Only %d bytes were received due to the error\n", lenBufSize);
+        printf("Only %d bytes were received\n", lenBufSize);
         return 1;
     }
 
@@ -97,10 +99,9 @@ int recvMessage(int socket, char **buf) {
     memset(*buf, '\0', lenI + 1);					// initialize the memory
     if (recvall(socket, *buf, &lenI) == -1) {		// receive
         printf("%s\n", strerror(errno));
-        printf("Only %d bytes were received due to the error\n", lenI);
+        printf("Only %d bytes were received\n", lenI);
         return 1;
     }
-
     return 0;
 }
 
@@ -163,7 +164,6 @@ void destroyUsers(User* users, int numOfUsers) {
         // free user's files
         int currNumOfFiles = 0, j = 0;
         while (currNumOfFiles < getNumOfFiles(users[i])) {
-            // TODO: delete all files and folders for each user
             currNumOfFiles++;
         }
         free(users[i]);
@@ -171,21 +171,17 @@ void destroyUsers(User* users, int numOfUsers) {
     free(users);
 }
 
-int auth(int socket, User *users, User *authUser, int *userIndex) {
+int auth(int socket, User *users, User *authUser) {
 
     // get messages containing username and password from client
     char *loginMsgUser = NULL, *loginMsgPass = NULL;
     if (recvMessage(socket, &loginMsgUser) == 1 || recvMessage(socket, &loginMsgPass) == 1) {
-        free(loginMsgUser);
-        free(loginMsgPass);
         return 1;
     }
 
     // extract username and password from the received messages
     char username[MAX_USERNAME], password[MAX_PASSWORD];
     if (extract(loginMsgUser, username, "User: ") != 0 || extract(loginMsgPass, password, "Password: ") != 0) { // bad input
-        free(loginMsgUser);
-        free(loginMsgPass);
         return 1;
     }
 
@@ -195,80 +191,46 @@ int auth(int socket, User *users, User *authUser, int *userIndex) {
         User currUser = users[i];
         if (strcmp(username, getUsername(currUser)) == 0 && strcmp(password, getPassword(currUser)) == 0) {
             *authUser = currUser;	// match found
-            *userIndex = i;
             break;
         }
         i++;
     }
 
-    free(loginMsgUser);
-    free(loginMsgPass);
     return 0;
 }
 
-int handle(int socket, User user, User *users) {
+int handle(int socket, User user, User *users, char *users_directory) {
     char* opCode;
     if (recvMessage(socket, &opCode) == 1) {					// receive opcode
         printf("failed to get action request from client\n");
-        free(opCode);
         return 1;
     }
 
     if (*opCode == LIST_OF_FILES_OPCODE) {							// get list of files
-        if (getListOfFiles(socket, user) == 1) {
+        if (getListOfFiles(socket, user, users_directory) == 1) {
             printf("failed to list files\n");
-            free(opCode);
             return 1;
         }
     } else if (*opCode == DELETE_FILE_OPCODE) {					    // delete a file
-        if (deleteFile(socket, user) != 0) {
+        if (deleteFile(socket, user, users_directory) != 0) {
             printf("failed to delete file\n");
-            free(opCode);
             return 1;
         }
     } else if (*opCode == ADDFILE_OPCODE) {					        // add a file
-        if (addFile(socket, user) != 0) {
+        if (addFile(socket, user, users_directory) != 0) {
             printf("failed to add file\n");
-            free(opCode);
             return 1;
         }
     } else if (*opCode == GET_FILE_OPCODE) {						// get a file
-        if (getFile(socket, user) != 0) {
+        if (getFile(socket, user, users_directory) != 0) {
             printf("failed to get file\n");
-            free(opCode);
             return 1;
         }
     } else {                                					    // error or quit
-        free(opCode);
         return 1;
-    }
-    free(opCode);
-    return 0;
-}
-
-int quit(int socket, fd_set *master, int *fdmax, int *fdsToUsersMap, int userIndex) {
-    // close connection socket
-    if (close(socket) == -1) {
-        printf("%s\n", strerror(errno));
-        return 1;
-    }
-    FD_CLR(socket, master);    // remove from master set
-    fdsToUsersMap[userIndex] = 0;
-
-    if (socket == *fdmax) {    // find a new fdmax
-        int i, tmpMax = 0;
-        for (i = 0; i < *fdmax; i++) {
-            if (FD_ISSET(i, master)) {
-                if (i > tmpMax) {
-                    tmpMax = i;
-                }
-            }
-        }
-        *fdmax = tmpMax;
     }
     return 0;
 }
-
 
 int extract(char *fullString, char *extracted, char *prefix) {
     char expectedPrefix[PREFIX_LEN];
@@ -281,45 +243,27 @@ int extract(char *fullString, char *extracted, char *prefix) {
     return 0;
 }
 
-void closeSockets(int fdmax, fd_set master) {
-    int i;
-    for (i = 0; i <= fdmax; i++) {
-        if (FD_ISSET(i, &master)) {
-            if (close(i) == -1) {
-                printf("%s\n", strerror(errno));
-            }
-        }
-    }
-}
-
-void closeAndFree(int fdmax, fd_set master, User *users, int numOfUsers, int *fdsToUsersMap) {
-    closeSockets(fdmax, master);
-    destroyUsers(users, numOfUsers);
-    free(fdsToUsersMap);
-}
-
-// TODO: add users parent directory to parameters
-int getListOfFiles(int socket, User user) {
+int getListOfFiles(int socket, User user, char *users_directory) {
     // list_of_files
     DIR *dir;
     char *username = getUsername(user);
+    char path[sizeof(username)+ sizeof(users_directory)+1];
+    sprintf(path, sizeof path, "%s/%s", users_directory, username); // build path to user directory
+    int numOfFiles = getNumOfFiles(user);
+
     struct dirent *ent;
-    if ((dir = opendir (username)) != NULL) {
-        char *files_buffer, *filename;
-        // read all the files into a files_buffer
+    if ((dir = opendir (path)) != NULL) {
+        char file_list[MAX_FILENAME*numOfFiles], filename[MAX_FILENAME];
+        // read all the files into a file_list
         while ((ent = readdir (dir)) != NULL) {
-            sprintf(filename, "%s\n", ent->d_name);
-            sprintf(files_buffer + strlen(files_buffer),filename);  // add file name to list
+            sprintf(filename, ent->d_name);
+            sprintf(file_list + strlen(file_list), "%s\n", filename);  // add file name to list of files
         }
         // finally close dir
         closedir (dir);
 
         // Send the file list
-        if (sendMessage(socket, files_buffer) != 0) {		// send list of files
-            free(files_buffer);
-            free(filename);
-            free(ent);
-            free(username);
+        if (sendMessage(socket, file_list) != 0) {		// send list of files
             return 1;
         }
     } else {
@@ -330,19 +274,22 @@ int getListOfFiles(int socket, User user) {
     return 0;
 }
 
-// TODO: add users parent directory to parameters
-int deleteFile(int socket, User user) {
-    char* filename;
+int deleteFile(int socket, User user, char *users_directory) {
+    char filename[MAX_FILENAME];
     if (recvMessage(socket, &filename) != 0) {		// get file name client
-        free(filename);
         return 1;
     };
 
+    char filepath[sizeof(username) + sizeof(users_directory) + sizeof(filename) + 2];
+    // build path to file
+    sprintf(filepath, sizeof filepath, "%s/%s/%s", users_directory, username,filename);
+
     char *message;
-    if( access( filename, F_OK ) != -1 ) {
+    if( access( filepath, F_OK ) != -1 ) {
         // file exists - remove it
-        if(remove(filename) == 0) {
+        if(remove(filepath) == 0) {
             message = "File removed.";
+            incrementNumOfFiles(user, -1);
         } else {
             return 1;
         }
@@ -350,25 +297,91 @@ int deleteFile(int socket, User user) {
         // file doesn't exist
         message = "No such file exists!";
     }
-    if( send(client_sock , message , strlen(message) , 0) < 0) {
-        puts("Failed sending message");
-        return 1;
-    }
-    // Send the file list
+
     if (sendMessage(socket, message) != 0) {		// send list of files
-        free(message);
-        free(filename);
         return 1;
     }
     return 0;
 }
 
-// TODO: Implement
-int addFile(int socket, User user) {
+int addFile(int socket, User user, char *users_directory) {
+    // first receive the file name
+    char file_name[MAX_FILENAME], file_content[MAX_FILESIZE];
+    int file_size;
+    FILE *fd;
+    char *username = getUsername(user);
+
+    if (recvMessage(socket, &file_name) != 0) {		// get file name
+        return 1;
+    };
+
+    if (recvMessage(socket, &file_content) != 0) {		// get file content
+        return 1;
+    };
+    file_size = atoi(file_content);
+
+    char filepath[sizeof(username) + sizeof(users_directory) + sizeof(file_name) + 2];
+    // build path to file
+    sprintf(filepath, sizeof filepath, "%s/%s/%s", users_directory, username, file_name);
+
+    fd = fopen(filepath, "w");
+    if (fd == NULL) {
+        printf(stderr, "Failed to open file: %s\n", strerror(errno));
+        return 1;
+    }
+    fwrite(file_content, sizeof(char), file_size, fd);
+    fclose(fd);
+
+    // increment users file count
+    incrementNumOfFiles(user, 1);
+
+    // send result message
+    char *message = "File added.";
+    if (sendMessage(socket, message) != 0) {		// send result
+        return 1;
+    }
+
     return 0;
 }
 
-// TODO: Implement
-int getFile(int socket, User user){
+int getFile(int socket, User user, char *users_directory) {
+    // first receive the file name
+    char file_name[MAX_FILENAME], file_content[MAX_FILESIZE];
+    int file_size;
+    char *username = getUsername(user);
+    FILE *fp;
+
+    if (recvMessage(socket, &file_name) != 0) {		// get file name
+        return 1;
+    };
+
+    char filepath[sizeof(username) + sizeof(users_directory) + sizeof(file_name) + 2];
+    // build path to file
+    sprintf(filepath, sizeof filepath, "%s/%s/%s", users_directory, username, file_name);
+
+    fp = fopen(filepath, "rb");
+    if (fp == NULL) {
+        char *message = "No such file exists!";
+        sendMessage(socket, message);
+        return 1;
+    }
+
+    // read file content into buffer
+    char *content_buffer = malloc(MAX_FILESIZE + 1);
+    fread(content_buffer, MAX_FILESIZE, 1, fp);
+    fclose(fp);
+    content_buffer[content_buffer] = 0;
+
+    // send file name
+    if (sendMessage(socket, file_name) != 0) {
+        free(content_buffer);
+        return 1;
+    }
+    // send file content
+    if (sendMessage(socket, content_buffer) != 0) {
+        free(content_buffer);
+        return 1;
+    }
+
     return 0;
 }

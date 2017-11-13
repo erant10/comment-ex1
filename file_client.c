@@ -1,195 +1,151 @@
-#include <stdio.h> //printf
-#include <string.h>    //strlen
-#include <sys/socket.h>    //socket
 #include <arpa/inet.h> //inet_addr
-
 #include <fcntl.h> // for open
-#include <unistd.h> // for close
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>		// for close
+#include <errno.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "network_main.h"
+
+#define DEFAULT_PORT "1337"
+#define DEFAULT_HOSTNAME "localhost"
+#define MAX_OP_LEN 20
+#define MAX_ARG_LEN 500
+// OP names
+#define LIST_OF_FILES "list_of_files"
+#define DELETE_FILE "delete_file"
+#define ADD_FILE "add_file"
+#define GET_FILE "get_file"
+#define QUIT "quit"
 
 int main(int argc , char *argv[])
 {
-    int sock;
-    struct sockaddr_in server;
-    char *HOST;
-    int PORT;
 
 
-    // Check arguments
-    if ( argc > 3) {
-        printf("Error in number of arguments \n");//ido: i deleted the parenthis
-        exit(-1);
+    // handle command line arguments
+    char* port = DEFAULT_PORT;
+    char* hostname = DEFAULT_HOSTNAME;
+
+    if (argc > 3) {						// too many arguments
+        return 1;
     }
-
-    // Check if a host and/or port was provided
-    if (argc > 1) {
-        // Set host name
-        HOST = argv[1];
-        // Set port
-        PORT = (int) strtol((argv[2]), NULL, 10);
-        if (PORT == 0) {
-            printf("Error parsing port.\n");
-            exit(-1);
+    else if(argc > 1) {
+        hostname = argv[1];
+        if (argc == 3) {
+            port = argv[2];
         }
-    } else {
-        // if they were not provided - set to default values
-        HOST = "127.0.0.1";//ido: why this is the local host?
-        PORT = 1337;
     }
 
-    //Create socket
-    sock = socket(AF_INET , SOCK_STREAM , 0);
-    if (sock == -1)
-    {
-        printf("Could not create socket");
+    // connection parameters and server's address
+    struct addrinfo hints, *serverInfo;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    getaddrinfo(hostname, port, &hints, &serverInfo);
+
+    // create socket
+    int sock = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol);
+    if (sock == -1) {
+        printf("%s\n", strerror(errno));
+        return 1;
     }
-    puts("Socket created");
+    freeaddrinfo(serverInfo);
 
-    server.sin_addr.s_addr = inet_addr(HOST);
-    server.sin_family = AF_INET;
-    server.sin_port = htons( PORT );
+    char *serverReply;
+    // receive greeting from server
+    if (recvMessage(sock, &serverReply) != 0) {
+        return 1;
+    }
+    printf("%s\n", serverReply);
 
-    //Connect to remote server
-    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0)
-    {
-        perror("connect failed. Error");
+    // log in to mail server
+    if (login(sock) == 1) {
+        if (close(sock) == -1) {
+            printf("%s\n", strerror(errno));
+        }
+        return 1;
+    }
+    char userInput[MAX_OP_LEN + 2 + 2*MAX_ARG_LEN],
+            op[MAX_OP_LEN],
+            arg1[MAX_ARG_LEN],
+            arg2[MAX_ARG_LEN];
+
+    while(1) {
+        // clear commands
+        memset(op, 0, MAX_OP_LEN);
+        memset(arg1, 0, MAX_ARG_LEN);
+        memset(arg2, 0, MAX_ARG_LEN);
+
+        // get desired operation from user
+        fgets(userInput, MAX_OP_LEN + 2 + 2*MAX_ARG_LEN, stdin);
+
+        // parse input
+        strcpy(op, strtok(userInput , " "));
+        strcpy(arg1, strtok(NULL, " "));
+        strcpy(arg2 , strtok(NULL, " "));
+
+        // match op name
+        if (strcmp(op, LIST_OF_FILES) == 0) {
+            if (listOfFiles(sock) == 1) {
+                printf("error in getting list of files\n");
+                if (close(sock) == -1) {
+                    printf("%s\n", strerror(errno));
+                }
+                return 1;
+            }
+        } else if (strcmp(op, DELETE_FILE) == 0) {
+            if (arg1 == NULL) {
+                printf("filename was not provided");
+            } else if (deleteFile(sock, arg1) == 1) {
+                printf("error in deleting file\n");
+                if (close(sock) == -1) {
+                    printf("%s\n", strerror(errno));
+                }
+                return 1;
+            }
+        } else if (strcmp(op, ADD_FILE) == 0) {
+            if (arg1 == NULL || arg2 == NULL) {
+                printf("path to file and/or new file name were not provided");
+            } else if (addFile(sock, arg1, arg2) == 1) {
+                printf("error in adding file\n");
+                if (close(sock) == -1) {
+                    printf("%s\n", strerror(errno));
+                }
+                return 1;
+            }
+        } else if (strcmp(op, GET_FILE) == 0) {
+            if (arg1 == NULL || arg2 == NULL) {
+                printf("path to save and/or file name were not provided");
+            } else if (getFile(sock, arg1, arg2) == 1) {
+                printf("error in gettting file\n");
+                if (close(sock) == -1) {
+                    printf("%s\n", strerror(errno));
+                }
+                return 1;
+            }
+        } else if (strcmp(op, QUIT) == 0) {
+            if (quit(sock) == 1) {
+                printf("error in quitting\n");
+                if (close(sock) == -1) {
+                    printf("%s\n", strerror(errno));
+                }
+                return 1;
+            }
+            break;
+        }
+        // invalid op
+        break;
+    }
+
+    // close socket
+    if (close(sock) == -1) {
+        printf("%s\n", strerror(errno));
         return 1;
     }
 
-    // Successfully connected to server
-    char message[1000] , server_reply[2000];
-    int action;
-    int quit = 0;
-    int loggedin = 0;
-    char *input;
-
-    // try to login - recieve welcome message from the server
-    // puts("Welcome! Please log in.\n");
-
-    scanf("%s" , input);
-    while(!loggedin && !quit){
-        //Send login info
-        if( send(sock , input , strlen(input) , 0) < 0)
-        {
-            puts("Failed sending login details");
-            return 1;
-        }
-        //Receive a reply from the server
-        if( recv(sock , server_reply , 2000 , 0) < 0)
-        {
-            puts("recv failed");
-            break;
-        }
-        // print response
-        // puts(server_reply);
-        // check the server reply to see if login was successful
-        if(successful_login){
-            loggedin = 1;
-        } else {
-            //puts("Invalid username or password. try again.\n");
-            scanf("%s" , input);
-        }
-    }
-
-    //keep communicating with server until quit
-    while(!quit)
-    {
-        char *action_name, *param1, *param2;
-        int read = scanf("%s %s %s", action_name, param1, param2);
-        action = -1;
-        // read the input from the user until the action is valid
-        while (action < 0 && !quit) {
-            if (strcmp(action_name,"list_of_files") == 0) {
-                action = 0;
-            } else if (strcmp(action_name,"delete_file") == 0) {
-                action = 1;
-            } else if(strcmp(action_name,"add_file") == 0) {
-                action = 2;
-            } else if(strcmp(action_name,"get_file") == 0) {
-                action = 3;
-            } else if(strcmp(action_name,"quit") == 0) {
-                quit = 1;
-            } else {
-                printf("Sorry, Unknown Action. Try Again: \n");
-                scanf("%s" , action_name);
-            }
-        }
-        if (quit) {
-            break;
-        }
-        //Handle Actions Here
-        if (action == 0) {
-            // list_of_files - send action to server and print the response
-            if( send(sock , action , strlen(action) , 0) < 0) {///ido: why strlen(action)? action is an int
-                puts("Send failed");
-                return 1;
-            }
-            //Receive a reply from the server
-            if( recv(sock , server_reply , 2000 , 0) < 0) {
-                puts("recv failed");
-                break;
-            }
-            // print response
-            puts(server_reply);
-
-        } else if( action == 1 ) {
-            // delete_file - send action and the file name to the server
-            char buffer = ""; // build the buffer according to the protocol ///ido:what is this buffer? we need to send the filename
-            if( send(sock , buffer , strlen(buffer) , 0) < 0) {
-                puts("Send failed");
-                return 1;
-            }
-            //Receive a reply from the server
-            if( recv(sock , server_reply , 2000 , 0) < 0) {
-                puts("recv failed");
-                break;
-            }
-            // print response
-            puts(server_reply);
-
-        } else if( action == 2 ) {
-            // add_file - look for the chosen file and open fd
-
-            // ASK YUVAL - what is the best approach to send the file
-            // build the buffer with the file content according to the protocol
-            // open the file
-            // copy file content into buffer
-
-            // send the buffer to the server
-            char buffer = ""; // build the data buffer according to the protocol
-            if( send(sock , buffer , strlen(buffer) , 0) < 0) {
-                puts("Send failed");
-                return 1;
-            }
-            //Receive a reply from the server
-            if( recv(sock , server_reply , 2000 , 0) < 0) {
-                puts("recv failed");
-                break;
-            }
-            // print response
-            puts(server_reply);
-
-        } else if( action == 3 ) {
-            // get_file - send action and the file name to the server
-            char buffer = "";
-            if( send(sock , buffer , strlen(buffer) , 0) < 0) {
-                puts("Send failed");
-                return 1;
-            }
-            //Receive a reply from the server
-            if( recv(sock , server_reply , 2000 , 0) < 0) {
-                puts("recv failed");
-                break;
-            }
-            // save the file
-
-
-            // print response
-            puts(server_reply);
-        }
-
-
-    }
-
-    close(sock);
     return 0;
 }
