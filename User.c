@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <string.h>
 #include "User.h"
-#include "Mail.h"
 #define MAXFILES 15
 #define MAX_USERNAME 25
 #define MAX_PASSWORD 25
